@@ -241,12 +241,13 @@ def kpi_MDD(DF):
     df["drawdown"]=df["max_cum_ret"]-df["cum_ret"]
     df["drawdown_pct"]=df["drawdown"]/df["max_cum_ret"]
     return df["drawdown_pct"].max()
-        
+
+print("iniciando...")
 
 event=th.Event()
 
 App=TradeApp()
-App.connect("192.168.0.102",7497,clientId=1)
+App.connect("192.168.0.102",7497,clientId=2)
 
 th1=th.Thread(target=websoc)
 th1.start()
