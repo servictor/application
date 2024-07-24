@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr 22 11:35:22 2024
+
+https://interactivebrokers.github.io/tws-api/historical_bars.html
+
+https://www.interactivebrokers.eu/ru/index.php?f=41295&exch=ibfxpro&showcategories=FX
+
+@author: servictor
+"""
+
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+from ibapi.contract import Contract
+import threading as th
+import time as tm
+import pandas as pd
+import numpy as np
+from copy import deepcopy
+
+
+class TradeApp(EWrapper, EClient):
+    def __init__(self):
+        EClient.__init__(self, self)
+        self.data={}
+    def contractDetails(self, reqId, contractDetails):
+        print(f"ID:{reqId} \n Contrato:{contractDetails}")
+    def historicalData(self, reqId, bar):
+        #print(f"req_id {reqId}, bar:{bar}")
+        if reqId not in self.data:
+            self.data[reqId]=[{"Data":bar.date,
+                               "Abertura":bar.open,
+                               "Maxima":bar.high,
+                               "Minima":bar.low,
+                               "Fechamento":bar.close,
+                               "Volume":bar.volume,
+                               "Time":tm.time()}]
+        if reqId in self.data:
+           self.data[reqId].append({"Data":bar.date,
+                                    "Abertura":bar.open,
+                                    "Maxima":bar.high,
+                                    "Minima":bar.low,
+                                    "Fechamento":bar.close,
+                                    "Volume":bar.volume,
+                                    "Time":tm.time()})
+
+
+def websoc():
+    App.run()
+    event.wait()
+    if event.is_set():
+        App.disconnect()
+    
+
+def ct_fx(simbolo,sec="CASH",curr="USD",exch="IDEALPRO"):
+    """
+    Parameters
+    ----------
+    simbolo : String do símbolo desejado
+        recebe simbolo para criar objeto de contratos fx
+
+    Returns
+        retorna objeto do contrato
+    -------
+    """
+    contrato=Contract()
+    contrato.symbol=simbolo
+    contrato.secType=sec
+    contrato.currency=curr
+    contrato.exchange=exch
+    return contrato
+
+
+def hist_01(req_num,contrato):
+    App.reqHistoricalData(reqId=req_num,
+                          contract=contrato,
+                          endDateTime="",
+                          durationStr="2 M",
+                          barSizeSetting="15 mins",
+                          whatToShow="MIDPOINT",
+                          useRTH=1,
+                          formatDate=1,
+                          keepUpToDate=0,
+                          chartOptions=[])
+
+
+def hist_02(req_num,contrato):
+    App.reqHistoricalData(reqId=req_num,
+                          contract=contrato,
+                          endDateTime="",
+                          durationStr="30 S",
+                          barSizeSetting="1 min",
+                          whatToShow="MIDPOINT",
+                          useRTH=1,
+                          formatDate=1,
+                          keepUpToDate=0,
+                          chartOptions=[])
+
+
+def toDatafr(App_obj, tickers):
+    ret_df={}
+    for i, ticker in enumerate(tickers):
+        ret_df[ticker]=pd.DataFrame(App_obj[i])
+        #ret_df[ticker].set_index("Data",inplace=True)
+    return ret_df
+        
+
+def ind_macd(DF,a=12,b=26,c=9):
+    """
+    https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.ewm.html
+    
+    """
+    df=DF.copy()
+    df["MA_FAST"]=df["Fechamento"].ewm(span=a,min_periods=a).mean()
+    df["MA_SLOW"]=df["Fechamento"].ewm(span=b,min_periods=b).mean()
+    df["MACD"]=df["MA_FAST"]-df["MA_SLOW"]
+    df["Signal"]=df["MACD"].ewm(span=c,min_periods=c).mean()
+    return df
+
+
+def ind_bollband(DF, n=20):
+    df=DF.copy()
+    df["MA"]=df["Fechamento"].ewm(span=n,min_periods=n).mean()
+    df["BB_up"]=df["MA"]+2*df["Fechamento"].rolling(n).std(ddof=0)
+    df["BB_dn"]=df["MA"]-2*df["Fechamento"].rolling(n).std(ddof=0)
+    df["BB_width"]=df["BB_up"]-df["BB_dn"]
+    df.dropna(inplace=True)
+    return df
+    
+    
+def ind_ATR(DF, n=20):
+    """
+    Colunas FA são o fechamento anterior.
+    """
+    df=DF.copy()
+    df["Mx-Mn"]=abs(df["Maxima"]-df["Minima"])  
+    df["Mx-FA"]=abs(df["Maxima"]-df["Fechamento"].shift(1))
+    df["Mn-FA"]=abs(df["Minima"]-df["Fechamento"].shift(1))
+    df["VarMx"]=df[["Mx-Mn","Mx-FA","Mn-FA"]].max(axis=1,skipna=False)
+    df["ATR"]=df["VarMx"].ewm(span=n,min_periods=n).mean()
+    return df["ATR"]
+    
+    
+def ind_RSI(DF,n=14):
+    df=DF.copy()
+    df["Ch"]=df["Fechamento"]-df["Fechamento"].shift(1)
+    df["G"]= np.where(df["Ch"] > 0, df["Ch"], 0)
+    df["L"]= np.where(df["Ch"] < 0, abs(df["Ch"]), 0)
+    Gain=df["G"].tolist()
+    Loss=df["L"].tolist()
+    AvG=[]
+    AvL=[]
+    for i in range(len(df)):
+        if i < n:
+            AvG.append(np.NaN)
+            AvL.append(np.NaN)
+        elif i == n:
+            AvG.append(df["G"].rolling(n).mean()[n])
+            AvL.append(df["L"].rolling(n).mean()[n])
+        else:
+            AvG.append(((n-1)*AvG[i-1]+Gain[i])/n)
+            AvL.append(((n-1)*AvL[i-1]+Loss[i])/n)
+    df["AvG"]=np.array(AvG)
+    df["AvL"]=np.array(AvL)
+    df["RS"]=df["AvG"]/df["AvL"]
+    df["RSI"]=100-(100/(1+df["RS"]))
+    return df
+
+
+def ind_ADX(DF, n=20):
+    df=DF.copy()
+    df["Mx-Mn"]=abs(df["Maxima"]-df["Minima"])  
+    df["Mx-FA"]=abs(df["Maxima"]-df["Fechamento"].shift(1))
+    df["Mn-FA"]=abs(df["Minima"]-df["Fechamento"].shift(1))
+    df["VarMx"]=df[["Mx-Mn","Mx-FA","Mn-FA"]].max(axis=1,skipna=False)
+    
+    df["+DM"]=np.where((df["Maxima"]-df["Maxima"].shift(1))>(df["Minima"].shift(1)-df["Minima"]),(df["Maxima"]-df["Maxima"].shift(1)),0)
+    df["+DM"]=np.where(df["+DM"]<0,0,df["+DM"])
+
+    df["-DM"]=np.where((df["Minima"].shift(1)-df["Minima"])>(df["Maxima"]-df["Maxima"].shift(1)),(df["Minima"].shift(1)-df["Minima"]),0)
+    df["-DM"]=np.where(df["+DM"]<0,0,df["-DM"])
+                       
+    df["+DMEMA"]=df["+DM"].ewm(span=n,min_periods=n).mean()
+    df["-DMEMA"]=df["-DM"].ewm(span=n,min_periods=n).mean()
+    df["VMxEMA"]=df["VarMx"].ewm(span=n,min_periods=n).mean()
+    
+    df["+DI"]=100*(df["+DMEMA"]/df["VMxEMA"])
+    df["-DI"]=100*(df["-DMEMA"]/df["VMxEMA"])
+    df["DX"]=100*(abs(df["+DI"]-df["-DI"])/(df["+DI"]+df["-DI"]))
+    
+    df["ADX"]=df["DX"].ewm(span=n,min_periods=n).mean()
+    
+    return df["ADX"]
+
+
+def ind_STOCH(DF, n=20, n2=3):
+    df=DF.copy()
+    df["C-L"]=df["Fechamento"]-df["Minima"].rolling(n).min()
+    df["H-L"]=df["Maxima"].rolling(n).max()-df["Minima"].rolling(n).min()
+    df["%K"]=df["C-L"]/df["H-L"]*100
+    df["%D"]=df["%K"].ewm(span=n2,min_periods=n2).mean()
+    return df["%K"]
+    
+
+def kpi_CAGR(DF):
+    """
+    É necessário que exista uma coluna "ret", que é o cálculo do retorno.
+    """
+    df=DF.copy()
+    df["comp ret"]=(1+df["ret"]).cumprod()
+    n=len(df)/(252*79.16)
+    cagr=(df['comp ret'].to_list()[-1]**(1/n))-1
+    return cagr
+
+
+def kpi_VOL(DF):
+    """
+    É necessário que exista uma coluna "ret", que é o cálculo do retorno.
+    """
+    df=DF.copy()
+    vol = df["ret"].std() * np.sqrt(252*79.16)
+    return vol
+
+          
+def kpi_SHARPE(DF, rf_rate=0.05):
+    """
+    É necessário que exista uma coluna "ret", que é o cálculo do retorno.
+    """
+    df=DF.copy()
+    return (kpi_CAGR(df)-rf_rate)/kpi_VOL(df)
+
+        
+def kpi_MDD(DF):
+    """
+    É necessário que exista uma coluna "ret", que é o cálculo do retorno.
+    """
+    df=DF.copy()
+    df["cum_ret"]=(1+df["ret"]).cumprod()
+    df["max_cum_ret"]=df["cum_ret"].cummax()
+    df["drawdown"]=df["max_cum_ret"]-df["cum_ret"]
+    df["drawdown_pct"]=df["drawdown"]/df["max_cum_ret"]
+    return df["drawdown_pct"].max()
+        
+
+event=th.Event()
+
+App=TradeApp()
+App.connect("192.168.0.102",7497,clientId=1)
+
+th1=th.Thread(target=websoc)
+th1.start()
+tm.sleep(5)
+
+tickers=["EUR","GBP","AUD"]
+
+for pos, symbol in enumerate(tickers):
+    contrato=ct_fx(symbol)
+    hist_01(pos,contrato)
+
+tm.sleep(30)
+
+D1=App.data
+historicos=toDatafr(D1, tickers)
+
+event.set()
+
+ohlc_dict=deepcopy(historicos)
+ticker_signal={}
+ticker_ret={}
+trade_count={}
+
+for ticker in tickers:
+    ohlc_dict[ticker]["STOCH"]=ind_STOCH(ohlc_dict[ticker])
+    ohlc_dict[ticker]["MACD"]=ind_macd(ohlc_dict[ticker])["MACD"]
+    ohlc_dict[ticker]["MACD-S"]=ind_macd(ohlc_dict[ticker])["Signal"]
+    ohlc_dict[ticker]["ATR"]=ind_ATR(ohlc_dict[ticker],60)
+    ohlc_dict[ticker].dropna(inplace=True)
+    ohlc_dict[ticker]=ohlc_dict[ticker].reset_index(drop=True)
+    trade_count[ticker]=0
+    ticker_signal[ticker]=""
+    ticker_ret[ticker]=[0]
+
+trade_count[ticker]=0
+ticker_signal[ticker]=""
+ticker_ret[ticker]=[0]
+
+for ticker in tickers:
+    for i in range(1,len(ohlc_dict[ticker])):
+        if ticker_signal[ticker]=="":
+            ticker_ret[ticker].append(0)
+            if ohlc_dict[ticker]["MACD"][i] > ohlc_dict[ticker]["MACD-S"][i] and \
+                ohlc_dict[ticker]["STOCH"][i]>30 and \
+                ohlc_dict[ticker]["STOCH"][i]>ohlc_dict[ticker]["STOCH"][i-1]:
+                    ticker_signal[ticker]="BUY"
+                    trade_count[ticker]+=1
+        elif ticker_signal[ticker]=="BUY":
+            if ohlc_dict[ticker]["Fechamento"][i] < (ohlc_dict[ticker]["Fechamento"][i-1]-ohlc_dict[ticker]["ATR"][i-1]):
+                ticker_signal[ticker]=""
+                trade_count[ticker]+=1
+                ticker_ret[ticker].append(((ohlc_dict[ticker]["Fechamento"][i-1]-ohlc_dict[ticker]["ATR"][i-1])/ohlc_dict[ticker]["Fechamento"][i-1])-1)
+            else:
+                ticker_ret[ticker].append((ohlc_dict[ticker]["Fechamento"][i]/ohlc_dict[ticker]["Fechamento"][i-1])-1)
+    ohlc_dict[ticker]["ret"]=np.array(ticker_ret[ticker])
+
+
+strategy_df=pd.DataFrame()
+for ticker in tickers:
+    strategy_df[ticker]=ohlc_dict[ticker]["ret"]
+strategy_df["ret"]=strategy_df.mean(axis=1)
+
+print(f"CAGR:{kpi_CAGR(strategy_df)}")
+print(f"VOL:{kpi_VOL(strategy_df)}")
+print(f"SHARPE:{kpi_SHARPE(strategy_df)}")
+print(f"MDD{kpi_MDD(strategy_df)}")
+print("Funcionou!")
+#ohlc_dict["EUR"].to_csv("EUR.csv", index=False)
+#ohlc_dict["GBP"].to_csv("GBP.csv", index=False)
+#ohlc_dict["AUD"].to_csv("AUD.csv", index=False)
