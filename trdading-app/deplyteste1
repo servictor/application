@@ -247,7 +247,7 @@ print("iniciando...")
 event=th.Event()
 
 App=TradeApp()
-App.connect("192.168.0.102",7497,clientId=2)
+App.connect("177.115.26.38",7497,clientId=0)
 
 th1=th.Thread(target=websoc)
 th1.start()
